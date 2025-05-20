@@ -261,6 +261,35 @@ class FrigateApiClient:
                 str(URL(self._host) / f"api/events/{event_id}/end"),
             ),
         )
+    
+    async def async_cam_snapshot(
+        self,
+        camera_name: str,
+        height: int | None = None,
+    ) -> bytes | None:
+        """Return bytes of camera image."""
+        return await self.api_wrapper(
+            "get",
+            str(
+                URL(self._host)
+                / f"api/{camera_name}/latest.jpg"
+                % ({"h": height} if height is not None and height > 0 else {})
+            ),
+            decode_json=False
+        )
+
+    async def async_webrtc_offer(
+        self, offer_sdp, session_id, camera_name: str
+    ) -> bytes | None:
+        """Handle the WebRTC offer and return an answer."""
+        return await self.api_wrapper(
+            method="post",
+            url=str(URL(self._host) 
+                / "api/go2rtc/webrtc"
+                % {"src": camera_name}
+            ),
+            data={"type": "offer", "sdp": offer_sdp}
+        )
 
     async def _get_token(self) -> None:
         """
@@ -311,7 +340,7 @@ class FrigateApiClient:
         if current_time >= self._token_data["expires"]:  # Compare UTC-aware datetimes
             await self._get_token()
 
-    async def _get_auth_headers(self) -> dict[str, str]:
+    async def get_auth_headers(self) -> dict[str, str]:
         """
         Get headers for API requests, including the JWT token if available.
         Ensures that the token is refreshed if needed.
@@ -342,7 +371,7 @@ class FrigateApiClient:
             headers = {}
 
         if not is_login_request:
-            headers.update(await self._get_auth_headers())
+            headers.update(await self.get_auth_headers())
 
         try:
             async with async_timeout.timeout(TIMEOUT):
@@ -358,9 +387,12 @@ class FrigateApiClient:
                     response.raise_for_status()
                     if is_login_request:
                         return response
-                    if decode_json:
+                    content_type = response.headers.get("Content-Type", "").lower()
+                    if decode_json and "json" in content_type:
                         return await response.json()
-                    return await response.text()
+                    if "text" in content_type or "json" in content_type:
+                        return await response.text()
+                    return await response.read()
 
         except asyncio.TimeoutError as exc:
             _LOGGER.error(
@@ -403,5 +435,12 @@ class FrigateApiClient:
                 "Error fetching information from %s: %s",
                 url,
                 exc,
+            )
+            raise FrigateApiClientError from exc
+        except Exception as exc:
+            _LOGGER.error(
+                "Unexpected error caught from %s: %s",
+                url,
+                exc
             )
             raise FrigateApiClientError from exc
